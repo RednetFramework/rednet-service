@@ -1,13 +1,15 @@
 import websocket
 import pickle
-from typing import Any, Callable
+import json
+from typing import Any, Callable, Optional, Dict
 from json import loads
-from ssl import CERT_NONE
-from os.path import exists
+from ssl import CERT_NONE, create_default_context
+from os.path import exists, join
 from hashlib import sha256
 from .rdapi.api import Api
 from .rdapi.base import ApiConnection
 from . import logger
+from .config import config, ServiceConfig
 
 class ServiceDefaults:
     types: dict = {}
@@ -96,36 +98,63 @@ class ServiceDefaults:
 
 class Service:
 
-    def __init__(self, url: str, password: str):
-        if not url.startswith('http://') and not url.startswith('https://'):
-            raise Exception('Invalid Endpoint')
+    def __init__(self, url: Optional[str] = None, password: Optional[str] = None, config_file: Optional[str] = None):
+        """Initialize the service with either explicit parameters or configuration."""
+        if config_file:
+            self.config = ServiceConfig.from_file(config_file)
+        else:
+            self.config = config
 
-        if url.endswith('/'):
-            url = url[:-1]
+        # Override config with explicit parameters if provided
+        if url:
+            self.config.server_url = url
+        if password:
+            self.config.password = password
 
-        self.base_url = url
-        self.password = sha256(password.encode()).hexdigest()
+        # Validate URL
+        if not self.config.server_url.startswith('http://') and not self.config.server_url.startswith('https://'):
+            raise Exception('Invalid Endpoint URL')
 
-    def _get_ws_url(self, base_url: str, endpoint:str):
-        return base_url.replace('https://', 'wss://').replace('http://', 'ws://') + f'/ws/{endpoint}'
+        if self.config.server_url.endswith('/'):
+            self.config.server_url = self.config.server_url[:-1]
 
-    def _save_auth(self, token: str, uuid: str):
+        # Set up logging
+        self.config.setup_logging()
+
+        # Initialize base URL and password
+        self.base_url = self.config.server_url
+        if not self.config.password:
+            raise Exception('Password is required')
+        self.password = sha256(self.config.password.encode()).hexdigest()
+
+    def _get_ws_url(self, base_url: str, endpoint: str) -> str:
+        """Get WebSocket URL from base URL and endpoint."""
+        ws_url = base_url.replace('https://', 'wss://').replace('http://', 'ws://')
+        return f"{ws_url}{self.config.ws_prefix}/{endpoint}"
+
+    def _save_auth(self, token: str, uuid: str) -> None:
+        """Save authentication data to a file."""
         auth_object = {
             'token': token,
-            'uuid': uuid
+            'uuid': uuid,
+            'endpoint': self.agent.endpoint
         }
-        with open(f'{self.agent.endpoint}.auth', 'wb') as f:
-            pickle.dump(auth_object, f)
+        auth_path = join(self.config.data_dir, self.config.auth_file)
+        os.makedirs(os.path.dirname(auth_path), exist_ok=True)
+        with open(auth_path, 'w') as f:
+            json.dump(auth_object, f, indent=4)
         
-    def _get_auth(self):
+    def _get_auth(self) -> Optional[Dict[str, str]]:
+        """Load authentication data from file."""
         try:
-            if exists(f'{self.agent.endpoint}.auth'):
-                with open(f'{self.agent.endpoint}.auth', 'rb') as f:
-                    return pickle.load(f)
+            auth_path = join(self.config.data_dir, self.config.auth_file)
+            if exists(auth_path):
+                with open(auth_path, 'r') as f:
+                    auth_data = json.load(f)
+                    if auth_data.get('endpoint') == self.agent.endpoint:
+                        return auth_data
         except Exception as err:
-            logger.error(f'Error on get auth: {str(err)}')
-            return None
-            
+            logger.error(f'Error loading auth data: {str(err)}')
         return None
 
     def _ws_msg(self, ws, msg):
@@ -141,20 +170,50 @@ class Service:
         logger.critical(f'Websocket Error {error}')
         exit(1)
 
-    def _connect_websocket(self, token):
-        if token:
-            ws_url = self._get_ws_url(self.base_url, self.agent.endpoint)
-            logger.info(f'websocket url: {ws_url}')
+    def _connect_websocket(self, token: str) -> None:
+        """Establish WebSocket connection with the server."""
+        if not token:
+            return
 
-            self.ws = websocket.WebSocketApp(
-                url=ws_url,
-                header={ 'Authorization' : f'Bearer {token}'},
-                on_error=self._ws_err,
-                on_message=self._ws_msg,
-                on_close=self._ws_close
-            )
-            self.agent.set_ws(self.ws)
-            self.ws.run_forever(sslopt={'cert_reqs': CERT_NONE})
+        ws_url = self._get_ws_url(self.base_url, self.agent.endpoint)
+        logger.info(f'WebSocket URL: {ws_url}')
+
+        # Prepare SSL options
+        ssl_opts = {}
+        if self.config.ssl.enabled:
+            if not self.config.ssl.verify:
+                ssl_opts['cert_reqs'] = CERT_NONE
+            if self.config.ssl.ca_file:
+                ssl_opts['ca_certs'] = self.config.ssl.ca_file
+            if self.config.ssl.client_cert and self.config.ssl.client_key:
+                ssl_opts['certfile'] = self.config.ssl.client_cert
+                ssl_opts['keyfile'] = self.config.ssl.client_key
+
+        # Create WebSocket connection
+        self.ws = websocket.WebSocketApp(
+            url=ws_url,
+            header={'Authorization': f'Bearer {token}'},
+            on_error=self._ws_err,
+            on_message=self._ws_msg,
+            on_close=self._ws_close
+        )
+        self.agent.set_ws(self.ws)
+
+        # Configure WebSocket options
+        ws_opts = {
+            'ping_interval': self.config.websocket.ping_interval,
+            'ping_timeout': self.config.websocket.ping_timeout,
+            'max_size': self.config.websocket.max_size
+        }
+
+        if self.config.websocket.compression:
+            ws_opts['subprotocols'] = [self.config.websocket.compression]
+
+        # Run WebSocket connection
+        self.ws.run_forever(
+            sslopt=ssl_opts if ssl_opts else None,
+            **ws_opts
+        )
 
     def _authenticate(self, save = False):
         logger.info(f'Authenticating on url: {self.base_url}')

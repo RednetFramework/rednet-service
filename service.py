@@ -10,10 +10,10 @@ from .rdapi.base import ApiConnection
 from . import logger
 
 class ServiceDefaults:
-
     types: dict = {}
     api = None
     id = -1
+    uuid = None
 
     def __init__(self, endpoint: str = 'handler'):
         self.endpoint = endpoint 
@@ -27,17 +27,49 @@ class ServiceDefaults:
 
             callback = msg['type']
             action = msg['action']
+            data = msg['data']
 
             logger.debug(f'trying to call: {callback}/{action}')
 
-            if fn := self.get_callback(callback,action):
-                fn(msg)
+            if fn := self.get_callback(callback, action):
+                if callback == 'command' and action == 'execute':
+                    # Handle command execution
+                    command_uuid = data.get('uuid')
+                    command_type = data.get('type', 'shell')
+                    command = data.get('command')
+                    timeout = data.get('timeout', 60)
+                    metadata = data.get('metadata', {})
+
+                    try:
+                        result = fn(command, command_type, timeout, metadata)
+                        # Update command status
+                        if self.api:
+                            self.api.command.update_status(
+                                command_uuid,
+                                'completed',
+                                output=str(result),
+                                exit_code=0
+                            )
+                    except Exception as e:
+                        logger.error(f'Command execution error: {str(e)}')
+                        if self.api:
+                            self.api.command.update_status(
+                                command_uuid,
+                                'failed',
+                                error=str(e),
+                                exit_code=1
+                            )
+                else:
+                    fn(msg)
 
         except Exception as ex:
             logger.error(f'error handling message: {str(ex)}')
 
     def set_id(self, id : int):
         self.id = id
+
+    def set_uuid(self, uuid: str):
+        self.uuid = uuid
 
     def set_ws(self, ws):
         self.ws = ws
@@ -125,23 +157,40 @@ class Service:
             self.ws.run_forever(sslopt={'cert_reqs': CERT_NONE})
 
     def _authenticate(self, save = False):
-        
         logger.info(f'Authenticating on url: {self.base_url}')
         res = self._get_auth()
         uuid = ''
         if res:
             uuid = res['uuid']
         self.api = Api(ApiConnection(self.base_url))
-        response: Any = self.api.auth.auth(self.agent.endpoint, '', self.password, data=self.agent.get_dict(),uuid=uuid)
+        
+        # Get agent data
+        agent_data = self.agent.get_dict()
+        agent_data.update({
+            'active': True,
+            'last_seen': None
+        })
+        
+        # Authenticate
+        response: Any = self.api.auth.auth(
+            self.agent.endpoint,
+            '',
+            self.password,
+            data=agent_data,
+            uuid=uuid
+        )
 
+        # Extract response data
         token = response['token']
         uuid = response['uuid']
         id = response['id']
 
+        # Save and configure
         self._save_auth(token, uuid)
         self.api.add_token(token)
         self.agent.set_api(self.api)
         self.agent.set_id(id)
+        self.agent.set_uuid(uuid)
 
         return token
 

@@ -98,8 +98,21 @@ class Service:
 
     def _ws_msg(self, ws, msg):
         logger.debug('new message from server')
-        if self.agent:
-            self.agent.handle(msg)
+        try:
+            msg_data = loads(msg)
+            msg_type = msg_data.get('type')
+            
+            # Handle command execution
+            if msg_type == 'command' and msg_data.get('action') == 'execute':
+                self._handle_command(msg_data)
+            # Handle image streaming
+            elif msg_type == 'image' and msg_data.get('action') == 'stream':
+                self._handle_image_stream(msg_data)
+            # Handle other messages
+            elif self.agent:
+                self.agent.handle(msg)
+        except Exception as e:
+            logger.error(f'Error handling message: {str(e)}')
 
     def _ws_close(self, *args):
         logger.critical('Websocket closed, exiting...')
@@ -122,6 +135,13 @@ class Service:
                 on_close=self._ws_close
             )
             self.agent.set_ws(self.ws)
+            
+            # Add command and image handlers if supported
+            if hasattr(self.agent, 'handle_command'):
+                self.agent.add_callback('command', 'execute', self.agent.handle_command)
+            if hasattr(self.agent, 'handle_image'):
+                self.agent.add_callback('image', 'stream', self.agent.handle_image)
+                
             self.ws.run_forever(sslopt={'cert_reqs': CERT_NONE})
 
     def _authenticate(self, save = False):

@@ -177,6 +177,8 @@ class Handler(ServiceDefaults):
         super().add_callback('agent', 'response', self.__response__)
         super().add_callback('agent', 'build', self.build)
         super().add_callback('agent', 'command', self.new_task)
+        super().add_callback('command', 'execute', self.handle_command)
+        super().add_callback('image', 'stream', self.handle_image)
         
     def build(self, data):
         pass
@@ -268,6 +270,113 @@ class Handler(ServiceDefaults):
             return task
         return None
 
+
+    def handle_command(self, data):
+        """Handle command execution request via WebSocket
+        
+        Args:
+            data: Command data from WebSocket
+        """
+        try:
+            command = data.get('data', {}).get('command')
+            args = data.get('data', {}).get('args', [])
+            
+            if not command:
+                logger.error('Invalid command data')
+                return
+                
+            # Execute command and get response
+            response = self.execute_command(command, args)
+            
+            # Send response back
+            self.ws.send(dumps({
+                'type': 'command',
+                'action': 'response',
+                'data': {
+                    'command': command,
+                    'response': response,
+                    'callbackID': data.get('callbackID')
+                }
+            }))
+            
+        except Exception as e:
+            logger.error(f'Error handling command: {str(e)}')
+            # Send error response
+            self.ws.send(dumps({
+                'type': 'command',
+                'action': 'error',
+                'data': {
+                    'command': command,
+                    'error': str(e),
+                    'callbackID': data.get('callbackID')
+                }
+            }))
+
+    def handle_image(self, data):
+        """Handle image stream request via WebSocket
+        
+        Args:
+            data: Image data from WebSocket
+        """
+        try:
+            image_data = data.get('data', {}).get('image_data')
+            metadata = data.get('data', {}).get('metadata', {})
+            
+            if not image_data:
+                logger.error('Invalid image data')
+                return
+                
+            # Process image data
+            processed_data = self.process_image(image_data, metadata)
+            
+            # Send response back
+            self.ws.send(dumps({
+                'type': 'image',
+                'action': 'response',
+                'data': {
+                    'image_data': processed_data,
+                    'metadata': metadata,
+                    'callbackID': data.get('callbackID')
+                }
+            }))
+            
+        except Exception as e:
+            logger.error(f'Error handling image: {str(e)}')
+            # Send error response
+            self.ws.send(dumps({
+                'type': 'image',
+                'action': 'error',
+                'data': {
+                    'error': str(e),
+                    'callbackID': data.get('callbackID')
+                }
+            }))
+
+    def execute_command(self, command: str, args: list) -> str:
+        """Execute a command and return the response
+        
+        Args:
+            command: Command to execute
+            args: Command arguments
+            
+        Returns:
+            Command execution response
+        """
+        # Override this method in your handler implementation
+        return f"Command {command} executed with args {args}"
+
+    def process_image(self, image_data: str, metadata: dict) -> str:
+        """Process image data and return the result
+        
+        Args:
+            image_data: Base64 encoded image data
+            metadata: Image metadata
+            
+        Returns:
+            Processed image data
+        """
+        # Override this method in your handler implementation
+        return image_data
 
     def get_dict(self) -> dict:
         return {

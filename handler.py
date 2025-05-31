@@ -27,8 +27,8 @@ class AgentCommand:
     params: list[AgentCommandArg]
     mitr: list[str]
 
-    def __init__(self, name : str, id: Any, description: str= '', help:str = '', admin: bool = False, args: list[AgentCommandArg] = [], mitr : list[str] =  []):
-        self.id = id
+    def __init__(self, name : str, key: Any, description: str= '', help:str = '', admin: bool = False, args: list[AgentCommandArg] = [], mitr : list[str] =  []):
+        self.key = key
         self.name = name
         self.description = description
         self.help = help
@@ -49,7 +49,7 @@ class AgentCommand:
                 'file': param.file
             })
         return {
-            'id': self.id,
+            'key': self.key,
             'name': self.name,
             'description': self.description,
             'help': self.help,

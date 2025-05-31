@@ -1,0 +1,4 @@
+[submodule "rdapi"]
+	path = rdapi
+	url = https://github.com/RednetFramework/rednet-api
+

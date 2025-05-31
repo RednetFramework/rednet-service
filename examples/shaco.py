@@ -1,5 +1,5 @@
-from rednet_service.handler import AgentCommand, AgentCommandArg, HandlerRegisterOptions, HandlerBuildConfig, Handler
-from rednet_service.service import Service
+from ..handler import AgentCommand, AgentCommandArg, HandlerRegisterOptions, HandlerBuildConfig, Handler
+from ..service import Service
 
 class ShellExec(AgentCommand):
     def __init__(self):
